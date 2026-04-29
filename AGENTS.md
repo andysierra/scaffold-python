@@ -2,7 +2,7 @@
 
 ## Rol de este archivo
 
-Este documento es el **punto de entrada y volante de orquestación** del proyecto. Dirige a los agentes hacia los specs específicos que viven en [`/specs`](./specs/). Cada decisión de arquitectura, contrato de servicio, o estándar de implementación tiene su propio spec en esa carpeta. Este archivo no duplica ese contenido — lo referencia y da contexto de por qué existe.
+Este documento es el **punto de entrada del desarrollo guiado por specs (spec-driven development)**. Antes de implementar cualquier funcionalidad, el agente debe leer el spec correspondiente en [`/specs`](./specs/). Cada decisión de arquitectura, contrato de servicio, o estándar de implementación tiene su propio spec en esa carpeta. Este archivo no duplica ese contenido — lo referencia y da contexto de por qué existe.
 
 ---
 
@@ -29,9 +29,37 @@ No se elige el stack mínimo viable para aprender; se elige el stack correcto pa
 | Contenerización | Docker con multi-stage builds |
 | Orquestación local | Docker Compose |
 | Observabilidad | Structured logging + OpenTelemetry |
-| Testing | pytest + testcontainers |
-| CI | (a definir en spec) |
+| Testing | pytest |
 | Gestión de secretos | Variables de entorno + `.env` no commiteado |
+
+---
+
+## Arquitectura hexagonal y estructura de carpetas
+
+Basada en el scaffold de Bancolombia (Java/Spring), adaptada a Python/FastAPI. Ver spec completo y equivalencias técnicas en [`specs/architecture.md`](./specs/architecture.md).
+
+```
+src/
+  domain/
+    model/
+      gateways/          # Interfaces abstractas (gateways/puertos de salida)
+                         # Entidades, value objects y excepciones de dominio
+    usecase/             # Casos de uso — orquestan modelo + gateways
+  infrastructure/
+    driven_adapters/     # Implementaciones de los gateways (DB, Redis, HTTP externo)
+      db/                # Base SQLAlchemy, session, modelos ORM
+    entry_points/        # Adaptadores de entrada
+      api_rest/          # Routers FastAPI, dependencies, error handlers
+  config.py
+  main.py
+tests/
+  unit/                  # Espeja la estructura de src/domain/
+specs/
+Dockerfile
+docker-compose.yml
+```
+
+Regla fundamental: las dependencias solo apuntan hacia adentro — `infrastructure` → `domain`, nunca al revés.
 
 ---
 
@@ -49,19 +77,56 @@ No se elige el stack mínimo viable para aprender; se elige el stack correcto pa
 
 ---
 
+## Buenas prácticas de microservicios
+
+- **Un proceso, una responsabilidad**: si el servicio crece hacia dos dominios distintos, separar en servicios
+- **Health checks**: `GET /health` (liveness) y `GET /ready` (readiness con verificación de DB/Redis)
+- **Idempotencia**: los endpoints que mutan estado deben ser idempotentes donde sea posible
+- **Graceful shutdown**: manejar `SIGTERM` para drenar conexiones antes de terminar
+- **Correlation ID**: propagar `X-Request-ID` en todos los logs y respuestas para trazabilidad end-to-end
+- **Sin lógica en `main.py`**: solo configuración del app, registro de routers y lifecycle hooks
+
+---
+
+## Buenas prácticas SonarQube
+
+- **Cobertura mínima**: ≥ 90% en líneas; umbral configurado en el Quality Gate del servidor SonarQube
+- **Cognitive complexity**: ≤ 15 por función; funciones largas se extraen
+- **Sin duplicación**: bloques duplicados > 10 líneas se extraen a utilidades compartidas
+- **Seguridad**: sin secretos hardcodeados, sin SQL construido con concatenación de strings, sin `eval()`
+- **Bugs críticos en cero**: el Quality Gate falla si hay issues de severidad `BLOCKER` o `CRITICAL`
+- El análisis se ejecuta automáticamente al subir código al servidor SonarQube (Docker) — no se corre localmente
+
+---
+
+## Estrategia de testing
+
+Solo tests unitarios con `pytest` y `pytest-mock`.
+
+- Prueban lógica de dominio pura — los puertos se mockean, sin I/O real
+- Priorizar cobertura de reglas de dominio, invariantes y flujos críticos antes que escenarios triviales o de infraestructura
+- Nombrado: `test_dado<Contexto>_cuando<Accion>_entonces<ResultadoEsperado>`
+
+---
+
 ## Specs en `/specs`
 
 Cada área del sistema tiene su propio documento. Los agentes deben leer el spec relevante antes de implementar.
 
 | Spec | Descripción |
 |---|---|
-| *(por crear)* | Arquitectura general y estructura de carpetas |
+| [`specs/architecture.md`](./specs/architecture.md) | Arquitectura hexagonal: capas, gateways, reglas de importación y checklist |
 | *(por crear)* | Contratos de API y convenciones REST |
 | *(por crear)* | Modelo de datos y estrategia de migraciones |
 | *(por crear)* | Estrategia de testing |
-| *(por crear)* | Observabilidad: logging, métricas y trazas |
-| *(por crear)* | Pipeline CI/CD |
 | *(por crear)* | Seguridad y autenticación |
+| [`specs/backend-standards.md`](./specs/backend-standards.md) | Estándares de código backend: tipado, estructura, convenciones y calidad |
+
+---
+
+## Lo que NO se versiona
+
+- La carpeta `.claude/` nunca se commitea — contiene memoria y configuración local del agente, no es parte del proyecto
 
 ---
 
