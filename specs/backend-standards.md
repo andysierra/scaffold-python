@@ -18,7 +18,7 @@ Estándares de código backend para este microservicio. Todo el código que lleg
 - Cada módulo expone solo lo necesario — usar `__all__` para controlar la interfaz pública
 - Sin imports circulares: el grafo de dependencias entre módulos debe ser un DAG
 - Los imports se ordenan: stdlib → third-party → interno; separados por línea en blanco (aplicado por `ruff`)
-- Prohibido importar desde `infrastructure/` en `domain/` o `application/`
+- Prohibido importar desde `infrastructure/` en `domain/`
 
 ---
 
@@ -34,10 +34,10 @@ Estándares de código backend para este microservicio. Todo el código que lleg
 ## Naming de DTOs
 
 - Los DTOs de la API se modelan en Pydantic v2 (`BaseModel`) con sufijo `Request` o `Response` — **prohibido** sufijo `Dto` / `DTO` (es convención Java).
-- Viven en `infrastructure/entry_points/api_rest/` (en `routers/<x>.py` o en un `schemas.py` por feature) — nunca en `domain/`.
-- El dominio expone modelos puros (`@dataclass` o `@dataclass(frozen=True)`); los routers convierten dominio ↔ DTO en su frontera.
+- Viven en `infrastructure/entry_points/api_rest/schemas/` — un módulo por feature; nunca en `domain/`.
+- El dominio expone modelos puros (`@dataclass` o `@dataclass(frozen=True)`); los routers convierten dominio ↔ schema en su frontera.
 - El nombre describe la intención, no solo la entidad: `CreateProductRequest`, `ProductResponse`, `UpdateStockRequest`.
-- Los `Command` / `Query` que entran al caso de uso son **dataclasses del dominio**, no Pydantic — viven en `domain/usecase/` junto al caso de uso que los consume.
+- Los `Command` / `Query` que entran al use case son **dataclasses del dominio**, no Pydantic — viven en `domain/services/` junto al use case que los consume.
 
 ---
 
@@ -117,7 +117,7 @@ Reglas de uso:
 
 ## Mapping dominio ↔ ORM
 
-- El modelo de dominio (`@dataclass`) y el modelo ORM (SQLAlchemy `Base`) son **dos clases distintas** y viven en lugares distintos: la entidad en `domain/model/`, el ORM en `infrastructure/driven_adapters/db/models/`.
+- El modelo de dominio (`@dataclass`) y el modelo ORM (SQLAlchemy `Base`) son **dos clases distintas** y viven en lugares distintos: la entidad en `domain/models/`, el ORM en `infrastructure/driven_adapters/persistence/models/`.
 - Mapping manual y explícito con métodos `to_domain()` / `from_domain()` dentro del adapter de persistencia (`<X>Repository`).
 - Prohibido `Mapped[...]`, anotaciones de SQLAlchemy o cualquier import de infraestructura en la entidad de dominio.
 - El adapter de salida es el **único** responsable de conocer ambos modelos y traducir entre ellos.

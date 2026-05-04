@@ -41,15 +41,22 @@ Basada en el scaffold de Bancolombia (Java/Spring), adaptada a Python/FastAPI. V
 ```
 src/
   domain/
-    model/
-      gateways/          # Interfaces abstractas (gateways/puertos de salida)
-                         # Entidades, value objects y excepciones de dominio
-    usecase/             # Casos de uso — orquestan modelo + gateways
+    models/              # Entidades y value objects de negocio
+    gateways/            # Interfaces abstractas — puertos de salida
+    services/            # Use cases concretos (orquestan models + gateways)
+    exceptions.py        # DomainError + subclases tipadas
+    messages.py          # ResponseCode + Messages enums
   infrastructure/
-    driven_adapters/     # Implementaciones de los gateways (DB, Redis, HTTP externo)
-      db/                # Base SQLAlchemy, session, modelos ORM
-    entry_points/        # Adaptadores de entrada
-      api_rest/          # Routers FastAPI, dependencies, error handlers
+    driven_adapters/     # Adaptadores de SALIDA (implementan gateways)
+      persistence/       # SQLAlchemy: base, session, ORM models, repositorios
+      clients/           # Clientes HTTP externos (httpx)
+      config/            # Wiring técnico (engine SQLAlchemy, Redis client)
+    entry_points/        # Adaptadores de ENTRADA
+      api_rest/
+        routers/         # APIRouter por feature
+        schemas/         # Pydantic Request/Response por feature
+        dependencies.py  # FastAPI Depends — wiring de DI manual
+        error_handlers.py # DomainError → respuesta JSON estructurada
   config.py
   main.py
 tests/
