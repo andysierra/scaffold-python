@@ -26,8 +26,8 @@ No se elige el stack mínimo viable para aprender; se elige el stack correcto pa
 | Base de datos | PostgreSQL + SQLAlchemy (async) + Alembic |
 | Caché | Redis |
 | Mensajería | (a definir en spec) |
-| Contenerización | Docker con multi-stage builds |
-| Orquestación local | Docker Compose |
+| Contenerización | Docker single-stage con buenas prácticas |
+| Orquestación local | Docker Compose (solo para dev) |
 | Observabilidad | Structured logging + OpenTelemetry |
 | Testing | pytest |
 | Gestión de secretos | Variables de entorno + `.env` no commiteado |
@@ -55,15 +55,19 @@ src/
       api_rest/
         routers/         # APIRouter por feature
         schemas/         # Pydantic Request/Response por feature
+        security/        # Validación JWT, Principal, scopes
         dependencies.py  # FastAPI Depends — wiring de DI manual
         error_handlers.py # DomainError → respuesta JSON estructurada
+        middleware.py    # X-Request-ID, logging del ciclo HTTP
   config.py
   main.py
 tests/
   unit/                  # Espeja la estructura de src/domain/
 specs/
 Dockerfile
-docker-compose.yml
+docker-compose.yml       # Solo para dev local; prod se provisiona vía IaC
+pyproject.toml           # Deps + ruff + mypy + pytest config
+sonar-project.properties # Config del análisis SonarQube
 ```
 
 Regla fundamental: las dependencias solo apuntan hacia adentro — `infrastructure` → `domain`, nunca al revés.
@@ -102,17 +106,10 @@ Regla fundamental: las dependencias solo apuntan hacia adentro — `infrastructu
 - **Sin duplicación**: bloques duplicados > 10 líneas se extraen a utilidades compartidas
 - **Seguridad**: sin secretos hardcodeados, sin SQL construido con concatenación de strings, sin `eval()`
 - **Bugs críticos en cero**: el Quality Gate falla si hay issues de severidad `BLOCKER` o `CRITICAL`
-- El análisis se ejecuta automáticamente al subir código al servidor SonarQube (Docker) — no se corre localmente
-
----
-
-## Estrategia de testing
-
-Solo tests unitarios con `pytest` y `pytest-mock`.
-
-- Prueban lógica de dominio pura — los puertos se mockean, sin I/O real
-- Priorizar cobertura de reglas de dominio, invariantes y flujos críticos antes que escenarios triviales o de infraestructura
-- Nombrado: `test_dado<Contexto>_cuando<Accion>_entonces<ResultadoEsperado>`
+- La configuración del proyecto vive en `sonar-project.properties` en la raíz del repo (sources, tests, `host.url`, exclusiones, Quality Gate wait)
+- El servidor SonarQube corre en Docker local (`http://localhost:9000` por defecto); el análisis se dispara con `sonar-scanner` desde el repo
+- El token de autenticación se pasa por env var `SONAR_TOKEN` — **nunca** se commitea en el archivo
+- `pytest` debe generar `coverage.xml` (`--cov-report=xml`) **antes** de correr `sonar-scanner` para que Sonar reciba la cobertura
 
 ---
 
@@ -122,12 +119,28 @@ Cada área del sistema tiene su propio documento. Los agentes deben leer el spec
 
 | Spec | Descripción |
 |---|---|
-| [`specs/architecture.md`](./specs/architecture.md) | Arquitectura hexagonal: capas, gateways, reglas de importación y checklist |
+| [`specs/business.md`](./specs/business.md) | Dominio de negocio del proyecto: glosario, entidades, lifecycle, use cases, reglas e invariantes — se llena por proyecto |
+| [`specs/architecture.md`](./specs/architecture.md) | Arquitectura hexagonal: capas, gateways, reglas de importación, wiring de DI y checklist |
+| [`specs/backend-standards.md`](./specs/backend-standards.md) | Estándares de código backend: tipado, estructura, convenciones, logging, containerización |
+| [`specs/security.md`](./specs/security.md) | Autenticación JWT (validación), autorización por scopes, errores, CORS, configuración |
+| [`specs/testing.md`](./specs/testing.md) | Estrategia de testing: scope unit-only, naming, qué se testea / qué no, cobertura, ejecución vía compose |
 | *(por crear)* | Contratos de API y convenciones REST |
 | *(por crear)* | Modelo de datos y estrategia de migraciones |
-| *(por crear)* | Estrategia de testing |
-| *(por crear)* | Seguridad y autenticación |
-| [`specs/backend-standards.md`](./specs/backend-standards.md) | Estándares de código backend: tipado, estructura, convenciones y calidad |
+
+---
+
+## Economía de tokens y disciplina de specs
+
+Estos specs viajan al contexto del agente cada vez que se implementa una feature — un spec con grasa se paga en tokens en cada iteración. Reglas para mantenerlos magros:
+
+- **Un tema por spec, sin solapes**: si dos specs hablan del mismo concepto, uno cross-referencia al otro (`[backend-standards.md](...)`), nunca copy-paste
+- **Listas y tablas** antes que prosa narrativa — un agente parsea más rápido una tabla de 5 filas que un párrafo equivalente
+- **Sin texto motivacional ni introducciones decorativas** — el primer párrafo ya dice qué regula la spec; nada de "este es un documento crucial que…"
+- **Code snippets solo cuando muestran un patrón no obvio** — no para ilustrar lo evidente; si el código habla solo, va al repo, no al spec
+- **Sin ejemplos largos** cuando una tabla de equivalencias basta (ver tabla Java↔Python en `architecture.md` como referencia)
+- Cuando un spec supera ~300 líneas, **partirlo** en specs más pequeños y enfocados
+- Reglas específicas a una feature concreta van en **código** (docstring, comentario justificado), no en spec — el spec es lo que aplica a todo el servicio
+- En la implementación, el agente carga **solo el spec relevante a la tarea** — no todos los specs cada vez. `business.md` + el spec del área que se toca suele ser suficiente
 
 ---
 
@@ -144,3 +157,6 @@ Cada área del sistema tiene su propio documento. Los agentes deben leer el spec
 - Código sin tipos ni validación
 - Tests que mockean todo y no prueban nada real
 - Documentación separada del código que inevitablemente se desactualiza
+- Multi-stage Dockerfiles cuando una sola etapa cumple — la complejidad solo se justifica si reduce peso/superficie real
+- Versionar la orquestación de **producción** en este repo — la infra de prod se provisiona vía IaC fuera del repo (`docker-compose.yml` es solo para dev local)
+- Logs manuales de inicio/fin de request en routers o services — ese ciclo es trabajo del middleware, no del flujo de negocio

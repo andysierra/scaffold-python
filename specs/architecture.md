@@ -54,8 +54,13 @@ src/
           products.py     ← endpoints REST de productos
         schemas/
           products.py     ← Pydantic Request/Response por feature
+        security/
+          jwt_validator.py ← parsea + valida JWT → Principal
+          principal.py    ← Principal (dataclass): user_id, scopes
+          dependencies.py ← get_current_user, require_scopes
         dependencies.py   ← inyección de dependencias con FastAPI Depends
         error_handlers.py ← convierte DomainError → JSON estructurado
+        middleware.py     ← X-Request-ID, logging del ciclo HTTP
   config.py               ← Settings Pydantic desde variables de entorno
   main.py                 ← registro de routers, lifespan, exception handlers
 ```
@@ -127,8 +132,10 @@ Adaptadores de **entrada**: reciben requests del exterior y los traducen a llama
 
 - `api_rest/routers/`: APIRouter por feature. Solo hacen: deserializar request → construir command/query → invocar use case → serializar response. **Sin lógica de negocio.**
 - `api_rest/schemas/`: modelos Pydantic `Request` / `Response` por feature.
-- `api_rest/dependencies.py`: construye y conecta el grafo de dependencias usando `Depends` de FastAPI — único lugar donde `entry_points` toca `driven_adapters` directamente para hacer el wiring.
+- `api_rest/security/`: validación de JWT, `Principal` y dependencies de autorización por scopes — ver [`security.md`](./security.md).
+- `api_rest/dependencies.py`: construye y conecta el grafo de dependencias usando `Depends` de FastAPI — único lugar donde `entry_points` toca `driven_adapters` directamente para hacer el wiring. Ver sección "Wiring de dependencias" más abajo.
 - `api_rest/error_handlers.py`: captura `DomainError` y lo convierte al formato estándar de respuesta.
+- `api_rest/middleware.py`: middlewares HTTP transversales — propagación de `X-Request-ID` y logging del ciclo de request (entrada/salida con latencia y status). Ver regla de logging en [`backend-standards.md`](./backend-standards.md).
 
 ---
 
@@ -162,6 +169,31 @@ CreateProductService(AsyncMock())
 | `domain/services/` | `domain/models/`, `domain/gateways/`, `domain/exceptions.py`, `domain/messages.py` | `infrastructure/` |
 | `infrastructure/driven_adapters/` | `domain/*` | `infrastructure/entry_points/` |
 | `infrastructure/entry_points/` | `domain/*`, `infrastructure/driven_adapters/` (solo en `dependencies.py` para wiring) | — |
+
+---
+
+## Wiring de dependencias (`dependencies.py`)
+
+`infrastructure/entry_points/api_rest/dependencies.py` es donde se construye y conecta el grafo de dependencias para cada request. En Spring esto pasa **automáticamente** por el container: marcas `@Component` en una clase, otra clase pide `@Autowired Foo`, y Spring resuelve qué implementación inyectar leyendo el classpath. En FastAPI **no hay container** — la "magia" no existe, así que el wiring se escribe explícito.
+
+Cada función `def get_X(...)` es el equivalente directo de un método `@Bean` en una clase `@Configuration`, o de la inyección automática que Spring haría al ver un `@Component` / `@Service`.
+
+| FastAPI (`dependencies.py`) | Spring |
+|---|---|
+| `def get_product_gateway(session: SessionDep) -> ProductGateway: return SQLAlchemyProductRepository(session)` | `@Bean ProductGateway productGateway(EntityManager em) { return new SQLAlchemyProductRepository(em); }` (o automático por `@Component` + `implements ProductGateway`) |
+| `def get_create_product_service(gw): return CreateProductService(gw)` | Constructor injection automática del `@Service` |
+| `Annotated[X, Depends(get_X)]` (en el router) | `@Autowired X x` |
+| `request.app.state.session_factory` (singleton del lifespan) | bean con scope `@Singleton` / `@ApplicationScope` |
+
+**Ventaja**: cero magia oculta — todo el wiring es código grep-eable. Si querés saber qué implementa `ProductGateway`, abrís `dependencies.py` y lo leés.
+
+**Desventaja**: hay que escribirlo. Una función por gateway, una por service. La inversión vale la pena: es trivial intercambiar implementaciones (testing, feature flags, multi-tenancy) sin tocar el dominio.
+
+**Reglas:**
+- `dependencies.py` es el **único** lugar donde `entry_points/` puede importar de `driven_adapters/` directamente. Los routers solo conocen el tipo abstracto vía `Annotated[Gateway, Depends(get_gateway)]`.
+- Sin lógica de negocio aquí — solo construcción y conexión de objetos.
+- Las dependencias compartidas (engine SQLAlchemy, cliente Redis, httpx) se crean **una vez** en `lifespan` y se cuelgan en `app.state`; las funciones de `dependencies.py` las leen de ahí.
+- La sesión de DB se abre **por request**, dentro de una transacción (`async with session.begin()`), y se cierra al salir — los repositorios solo hacen `flush()`, no `commit()`.
 
 ---
 
@@ -238,6 +270,6 @@ Esta arquitectura tiene su origen en el scaffold de Bancolombia (Java/Spring). L
 3. Crear el use case en `domain/services/` con su `Command` o `Query`
 4. Si aplica, agregar nueva excepción en `domain/exceptions.py` (con su `code` en `ResponseCode` y su `message` en `Messages`)
 5. Implementar el método nuevo en `infrastructure/driven_adapters/persistence/product_repository.py`
-6. Agregar el schema en `infrastructure/entry_points/api_rest/schemas/` y el endpoint en `infrastructure/entry_points/api_rest/routers/`
+6. Agregar el schema en `infrastructure/entry_points/api_rest/schemas/` y el endpoint en `infrastructure/entry_points/api_rest/routers/`, declarando el control de scopes con `Depends(require_scopes("..."))` si requiere autorización
 7. Agregar dependency function en `infrastructure/entry_points/api_rest/dependencies.py`
-8. Agregar test unitario en `tests/unit/domain/services/`
+8. Agregar test unitario en `tests/unit/domain/services/` (mockeando los gateways)

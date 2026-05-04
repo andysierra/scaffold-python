@@ -153,3 +153,59 @@ Reglas de uso:
 - Toda configuración en una clase Pydantic `Settings` cargada desde variables de entorno
 - Un único punto de entrada a la configuración (`src/config.py`) — sin leer `os.environ` disperso en el código
 - Valores sensibles nunca tienen default en código — fallan rápido si no están definidos en el entorno
+
+---
+
+## Logging
+
+Estrategia de **dos capas, sin solapes**:
+
+- **Middleware (ciclo HTTP transversal)**: registra una sola vez por request, en `infrastructure/entry_points/api_rest/middleware.py`. Loguea entrada (`REQUEST_RECEIVED` con `method`, `path`) y salida (`REQUEST_COMPLETED` con `status_code`, `latency_ms`). Inyecta `X-Request-ID` (genera uno si no llega) en el contexto de logging para que **toda línea posterior** lo herede.
+- **Logs en el flujo (eventos de dominio o de adapters)**: log inline donde ocurre el evento — "user activated", "notification sent", "db connection failed". Solo para eventos que no son visibles desde el borde HTTP.
+
+### Reglas
+
+- **Prohibido** loguear inicio/fin de request dentro de un router o service — eso es trabajo del middleware. Si lo necesitás dos veces, el middleware está mal configurado.
+- Logger estructurado obligatorio (`structlog`); contexto se pasa con kwargs, **nunca** con f-strings dentro del mensaje
+  ```python
+  # Correcto
+  logger.info(str(Messages.NOTIFICATION_SENT), webhook_url=url, user_id=uid)
+  # Incorrecto
+  logger.info(f"Notif enviada a {url} para user {uid}")
+  ```
+- Mensajes literales prohibidos — usar el enum `Messages` (ver "Mensajes del sistema")
+- Niveles:
+  - `DEBUG`: detalle interno de adapter (queries, payloads truncados)
+  - `INFO`: eventos de negocio o de ciclo de vida del proceso (DB conectada, notificación enviada)
+  - `WARNING`: condiciones recuperables (cache miss, retry, autenticación fallida)
+  - `ERROR`: fallos no recuperables que requieren atención
+- **Nunca** loguear secretos, tokens completos, ni payloads sin sanitizar — solo identificadores (`sub`, `user_id`, `request_id`)
+- `request_id` y, si la request está autenticada, `user_id` deben estar en el contexto de **todos** los logs de esa request — el middleware se encarga vía `structlog.contextvars`
+
+---
+
+## Containerización (Dockerfile)
+
+- **Single-stage** — sin builder separado ni venvs intermedios. La complejidad de multi-stage solo se justifica si reduce peso o superficie de ataque de forma real (no por defecto).
+- **Imagen base pinneada con tag específico** — nunca `latest`; idealmente con digest SHA si la cadena de suministro lo amerita
+- **Usuario no-root** obligatorio — el proceso del contenedor jamás corre como `root`
+- **Cacheo de capas**: copiar `requirements.txt` e instalar deps **antes** de copiar `src/` — para que cambios en código no invaliden el cache de instalación
+- `pip install --no-cache-dir` — no acumular wheels descargados en la imagen
+- **Sin secretos en el `Dockerfile`** ni en `ARG` — secretos por entorno en runtime
+- **`HEALTHCHECK`** definido — apunta a `/health`
+- **`EXPOSE`** explícito del puerto del proceso
+- Sin `COPY . .` indiscriminado — copiar solo `src/` y archivos estrictamente necesarios (con `--chown=<user>` para no quedar como root)
+- `.dockerignore` debe excluir `tests/`, `specs/`, `.git/`, `.venv/`, `__pycache__/`, archivos de config local
+
+La orquestación de infraestructura local (Postgres, Redis, etc.) **sí se versiona** vía `docker-compose.yml` para que cualquier dev levante el stack con un solo comando. La orquestación de **producción** **no** vive en este repo — se provisiona vía IaC (Terraform/Pulumi/CloudFormation) o el orquestador del cluster. `docker-compose.yml` no se usa fuera de dev.
+
+### Tooling de dev en contenedores efímeros
+
+El tooling de dev (`pytest`, `ruff`, `mypy`, `sonar-scanner`) **no se incluye** en la imagen de prod — la imagen de prod queda lean. Para que el dev no tenga que instalar Python ni dependencias en su máquina, se agregan servicios al mismo `docker-compose.yml` bajo `profiles: ["dev"]` que:
+
+- Usan una imagen base de Python (no la imagen del servicio)
+- Montan el código del repo como volumen
+- Cachean wheels en un volumen nombrado para que la 2da corrida sea rápida
+- Solo se levantan con `--profile dev` (no contaminan `docker compose up`)
+
+Patrón mínimo: un servicio `test` (pytest + cobertura → `coverage.xml`) y un servicio `sonar` (sonar-scanner-cli oficial). El segundo lee `coverage.xml` que dejó el primero. `SONAR_TOKEN` se pasa por env var, nunca hardcodeado.
